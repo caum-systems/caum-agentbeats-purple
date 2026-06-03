@@ -1,0 +1,75 @@
+{
+  manifest_version: "0.1.0",
+  config_schema: {
+    type: "object",
+    properties: {
+      openai_api_key: {
+        type: "string",
+        secret: true
+      },
+      caum_live_api_key: {
+        type: "string",
+        secret: true
+      },
+      caum_agent_llm: {
+        type: "string",
+        default: "openai/gpt-4.1"
+      },
+      caum_agentbeats_mode: {
+        type: "string",
+        default: "control"
+      },
+      caum_live_url: {
+        type: "string",
+        default: "https://caum-observation-production.up.railway.app/v2/live"
+      }
+    },
+    required: ["openai_api_key"],
+    additionalProperties: false
+  },
+  program: {
+    image: "ghcr.io/caum-systems/caum-agentbeats-purple:latest",
+    entrypoint: [
+      "python",
+      "-m",
+      "caum_agentbeats_purple.server",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "9019"
+    ],
+    env: {
+      OPENAI_API_KEY: "${config.openai_api_key}",
+      CAUM_LIVE_API_KEY: "${config.caum_live_api_key}",
+      CAUM_AGENT_LLM: "${config.caum_agent_llm}",
+      CAUM_AGENTBEATS_MODE: "${config.caum_agentbeats_mode}",
+      CAUM_LIVE_URL: "${config.caum_live_url}"
+    },
+    network: {
+      endpoints: [
+        {
+          name: "a2a_endpoint",
+          port: 9019
+        }
+      ]
+    }
+  },
+  provides: {
+    a2a: {
+      kind: "a2a",
+      endpoint: "a2a_endpoint"
+    }
+  },
+  exports: {
+    a2a: "a2a"
+  },
+  metadata: {
+    participant_roles: ["agent"],
+    caum_boundary: {
+      zero_semantic_observation: true,
+      benchmark_control_mode_available: true,
+      raw_content_returned: false,
+      semantic_truth_claim: false
+    }
+  }
+}
