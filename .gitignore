@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+runs/
+runs_smoke/
+*.pyc
+*.log
+.env
+*.env
+*.zip
