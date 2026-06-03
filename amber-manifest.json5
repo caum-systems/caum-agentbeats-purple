@@ -24,7 +24,7 @@
         default: "https://caum-observation-production.up.railway.app/v2/live"
       }
     },
-    required: ["openai_api_key"],
+    required: ["openai_api_key", "caum_live_api_key"],
     additionalProperties: false
   },
   program: {
