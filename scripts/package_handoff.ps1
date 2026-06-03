@@ -18,7 +18,7 @@ $dest = Join-Path $temp "CAUM_AGENTBEATS_PURPLE"
 Copy-Item -Recurse -Path $root -Destination $dest
 
 Get-ChildItem -Path $dest -Recurse -Force -Directory |
-    Where-Object { $_.Name -in @(".venv", "__pycache__", ".pytest_cache", "runs", "runs_smoke") } |
+    Where-Object { $_.Name -in @(".git", ".venv", "__pycache__", ".pytest_cache", "runs", "runs_smoke") } |
     Remove-Item -Recurse -Force
 
 Get-ChildItem -Path $dest -Recurse -Force -File |
