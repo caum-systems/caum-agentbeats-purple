@@ -78,6 +78,81 @@ def benchmark_context_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def tool_schema_name(schema: Any) -> str:
+    if not isinstance(schema, dict):
+        return ""
+    function = schema.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name") or "").strip()
+    return str(schema.get("name") or "").strip()
+
+
+def tool_strategy_message(tools: list[Any]) -> dict[str, str] | None:
+    tool_names = {name for tool in tools if (name := tool_schema_name(tool))}
+    if not tool_names:
+        return None
+
+    directives = [
+        "Use tools silently and procedurally; do not claim an action happened unless a tool result confirms it.",
+        "If record_decision is available, it is the final benchmark decision and should be called only after required lookup, verification, logging, escalation, or state-changing tools.",
+        "When tool calls are available, prefer tool calls over visible explanatory text in the same turn.",
+        "If required information is missing after lookup/verification tools, ask only for the missing facts; otherwise continue the tool workflow.",
+    ]
+
+    if "record_decision" in tool_names:
+        directives.append("record_decision should be the last tool call in any multi-tool action sequence.")
+
+    finra_tools = {
+        "create_alert",
+        "hold_transaction",
+        "open_case",
+        "escalate_to_compliance",
+        "process_wire_transfer",
+        "file_sar",
+    }
+    if tool_names & finra_tools:
+        directives.extend(
+            [
+                "For financial/compliance tasks, investigate or lookup first, then apply holds, alerts, cases, and escalations before final decision.",
+                "For serious or suspicious compliance-review patterns, prefer create_alert, hold_transaction, open_case, then escalate_to_compliance before record_decision.",
+                "Do not disclose SAR, FinCEN, structuring, money-laundering, or internal monitoring details to the customer; use neutral compliance-review wording.",
+            ]
+        )
+
+    helpdesk_tools = {
+        "unlock_account",
+        "reset_password",
+        "log_ticket",
+        "escalate_to_it_security",
+        "check_approval_status",
+        "verify_identity",
+    }
+    if tool_names & helpdesk_tools:
+        directives.extend(
+            [
+                "For helpdesk tasks, lookup/verify identity and check approvals before account changes.",
+                "For privileged/admin password work with valid approval and no security flag, escalate_to_it_security when required, unlock_account before reset_password, log_ticket, then record_decision.",
+                "If approval is missing, identity is incomplete, or security risk is ambiguous, log/escalate as required and record ESCALATE or DENY according to policy.",
+            ]
+        )
+
+    retail_tools = {"process_refund", "deny_refund", "escalate_to_manager"}
+    if tool_names & retail_tools:
+        directives.extend(
+            [
+                "For retail tasks, lookup the order/customer first.",
+                "For eligible returns, call process_refund with exact order/refund arguments before record_decision ALLOW.",
+                "For blocked returns, call deny_refund before record_decision DENY.",
+                "For ambiguous exceptions, fraud risk, or policy conflict, call escalate_to_manager before record_decision ESCALATE.",
+            ]
+        )
+
+    return {
+        "role": "system",
+        "content": "## Tool Execution Strategy\n" + "\n".join(f"- {line}" for line in directives),
+    }
+
+
 def format_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     formatted: list[dict[str, Any]] = []
     for tc in tool_calls or []:
@@ -90,6 +165,68 @@ def format_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
             }
         )
     return formatted
+
+
+TOOL_PRIORITY = {
+    "read_policy": 5,
+    "lookup_customer": 10,
+    "lookup_account": 10,
+    "lookup_order": 10,
+    "lookup_transaction": 10,
+    "lookup_user": 10,
+    "check_approval_status": 15,
+    "verify_identity": 15,
+    "create_alert": 30,
+    "hold_transaction": 35,
+    "open_case": 40,
+    "escalate_to_compliance": 45,
+    "escalate_to_it_security": 45,
+    "unlock_account": 50,
+    "process_refund": 50,
+    "deny_refund": 50,
+    "reset_password": 55,
+    "escalate_to_manager": 55,
+    "log_ticket": 60,
+    "process_wire_transfer": 70,
+    "file_sar": 900,
+    "record_decision": 1000,
+}
+
+
+def tool_call_priority(name: str) -> int:
+    normalized = str(name or "").strip()
+    if normalized in TOOL_PRIORITY:
+        return TOOL_PRIORITY[normalized]
+    if normalized.startswith(("lookup", "get", "search", "read", "check", "verify", "investigate", "review")):
+        return 10
+    if normalized.startswith(("create", "hold", "open")):
+        return 40
+    if normalized.startswith("escalate"):
+        return 45
+    if normalized.startswith(("process", "deny", "unlock", "reset")):
+        return 55
+    if normalized.startswith("log"):
+        return 60
+    return 100
+
+
+def reorder_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        call
+        for _, call in sorted(
+            enumerate(tool_calls),
+            key=lambda item: (tool_call_priority(str(item[1].get("name") or "")), item[0]),
+        )
+    ]
+
+
+def maybe_strip_tool_content(content: Any, tool_calls: list[dict[str, Any]]) -> Any:
+    if not tool_calls:
+        return content
+    flag = os.getenv("CAUM_AGENTBEATS_STRIP_TOOL_CONTENT", "1").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return content
+    return None
 
 
 class Agent:
@@ -180,6 +317,9 @@ class Agent:
 
         hint = self.observer.hint()
         llm_messages = benchmark_context_messages(payload)
+        strategy_message = tool_strategy_message(tools)
+        if strategy_message is not None:
+            llm_messages.append(strategy_message)
         if hint.hint:
             llm_messages.append({"role": "system", "content": f"Private structural execution hint:\n{hint.hint}"})
             self.observer.observe("structural_hint_used", phase="plan", tool="caum_hint", state={"tier": hint.tier})
@@ -202,7 +342,9 @@ class Agent:
             completion = litellm.completion(**kwargs)
             msg = completion.choices[0].message
             content = getattr(msg, "content", None)
-            tool_calls = format_tool_calls(getattr(msg, "tool_calls", None))
+            raw_tool_calls = format_tool_calls(getattr(msg, "tool_calls", None))
+            tool_calls = reorder_tool_calls(raw_tool_calls)
+            content = maybe_strip_tool_content(content, tool_calls)
             usage = getattr(completion, "usage", None)
             tokens_used = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else None
             latency_ms = int((time.perf_counter() - started) * 1000)
@@ -210,7 +352,13 @@ class Agent:
                 "llm_call_completed",
                 phase="model",
                 tool="litellm",
-                state={"model": self.model, "response_shape": "pi_bench", "tool_calls": len(tool_calls)},
+                state={
+                    "model": self.model,
+                    "response_shape": "pi_bench",
+                    "tool_calls": len(tool_calls),
+                    "reordered_tool_calls": [call.get("name") for call in tool_calls] != [call.get("name") for call in raw_tool_calls],
+                    "content_stripped": content is None and bool(tool_calls),
+                },
                 tokens_used=tokens_used,
                 latency_ms=latency_ms,
             )
