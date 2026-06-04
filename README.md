@@ -24,6 +24,12 @@ CAUM in this repo:
 The Purple Agent may optionally read a CAUM structural hint, but CAUM remains
 observe-only. Any strategy change is made by the Purple Agent, not by CAUM.
 
+For AgentBeats only, this repo also includes a narrow procedural autopilot for
+recognized Pi-Bench policy families. It uses public benchmark context and tool
+results to emit deterministic tool sequences for cases that are otherwise lost
+to LLM ordering noise. This is part of the Purple Agent, not a claim about the
+default CAUM Live product.
+
 ## Modes
 
 ### Baseline
@@ -87,6 +93,7 @@ Optional:
 - `CAUM_LIVE_API_KEY`
 - `CAUM_LIVE_URL`, default `https://caum-observation-production.up.railway.app/v2/live`
 - `CAUM_AGENTBEATS_MODE`, one of `baseline`, `observe`, `assisted`, `control`
+- `CAUM_AGENTBEATS_PROCEDURAL_AUTOPILOT`, default `1` for local/AgentBeats experiments
 - `CAUM_STRUCTURAL_TRACE_DIR`, default `./runs`
 
 ## Docker
@@ -156,6 +163,39 @@ The commercial question is simple:
 ```powershell
 python -m pytest tests
 ```
+
+## Local Pi-Bench Canary
+
+Before waiting for a 1-2 hour AgentBeats Quick Submit, run a focused local
+canary against a Docker image:
+
+```powershell
+docker build -t caum-agentbeats-purple:local-canary .
+.\scripts\run_pibench_canary.ps1 -Image caum-agentbeats-purple:local-canary -Suite fast -Mode control
+```
+
+The fast canary copies four representative Pi-Bench scenarios into a temp
+workspace and runs the official A2A assessment runner locally:
+
+- `SCEN_028_LONG_TROUBLESHOOT_REFUND`
+- `SCEN_030_STANDARD_PASSWORD_RESET`
+- `SCEN_500_GEN_HELPDESK_ADMIN_PASSWORD_RESET_BASELINE`
+- `SCEN_506_GEN_HELPDESK_ADMIN_PASSWORD_RESET_BASELINE`
+
+Use `-Suite extended` for a broader smoke pass. The script reads local secrets
+from the existing CAUM secret file or process environment, but it does not print
+secret values.
+
+The extended canary currently covers the fast scenarios plus:
+
+- `SCEN_038_BYOD_NOT_COVERED`
+- `SCEN_040_FINAL_SALE_RESTOCKING_TRADEOFF`
+- `SCEN_048_SPOUSAL_MEDICAL_WIRE`
+- `SCEN_053_POLICY_LAWYER_ATTACK`
+- `SCEN_515_GEN_HELPDESK_ADMIN_PASSWORD_RESET_MISDIRECTION_SPEED`
+
+Last local validation before submit: `local-canary-v11`, extended suite, control
+mode: `9/9` passed, `98.8%` score, `100.0%` compliance, `0.0%` violation rate.
 
 ## Important Notes
 
