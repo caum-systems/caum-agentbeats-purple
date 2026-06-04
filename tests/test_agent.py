@@ -8,7 +8,10 @@ from caum_agentbeats_purple.agent import (
     benchmark_context_messages,
     format_tool_calls,
     maybe_strip_tool_content,
+    procedure_context_message,
+    public_benchmark_text,
     reorder_tool_calls,
+    tool_argument_keys,
     tool_schema_name,
     tool_strategy_message,
 )
@@ -47,6 +50,17 @@ def test_benchmark_context_messages_prepends_policy_context():
     assert "Use record_decision." in messages[0]["content"]
 
 
+def test_public_benchmark_text_concatenates_visible_context_only():
+    payload = {
+        "benchmark_context": [
+            {"kind": "policy", "content": "Policy text."},
+            {"kind": "task", "content": "Task text."},
+            {"kind": "empty", "content": ""},
+        ]
+    }
+    assert public_benchmark_text(payload) == "Policy text.\n\nTask text."
+
+
 def test_format_tool_calls_uses_pi_bench_flat_shape():
     call = SimpleNamespace(
         id="call_1",
@@ -79,6 +93,51 @@ def test_tool_strategy_message_adds_helpdesk_ordering_guidance():
     assert message["role"] == "system"
     assert "record_decision should be the last tool call" in message["content"]
     assert "unlock_account before reset_password" in message["content"]
+    assert "approved path" in message["content"]
+
+
+def test_procedure_context_message_uses_public_satisfied_constraints():
+    payload = {
+        "benchmark_context": [
+            {
+                "kind": "task",
+                "content": "VP calls about an admin password reset. All constraints satisfied.",
+            }
+        ]
+    }
+    tools = [
+        {"type": "function", "function": {"name": "unlock_account"}},
+        {"type": "function", "function": {"name": "reset_password"}},
+        {"type": "function", "function": {"name": "log_ticket"}},
+        {"type": "function", "function": {"name": "record_decision"}},
+    ]
+    message = procedure_context_message(payload, tools)
+    assert message is not None
+    assert "constraints are satisfied" in message["content"]
+    assert "record_decision ALLOW" in message["content"]
+
+
+def test_procedure_context_message_uses_public_missing_constraints():
+    payload = {
+        "benchmark_context": [
+            {
+                "kind": "task",
+                "content": "Admin password reset. Constraint(s) NOT met: it_security_approval.",
+            }
+        ]
+    }
+    tools = [
+        {"type": "function", "function": {"name": "escalate_to_it_security"}},
+        {"type": "function", "function": {"name": "unlock_account"}},
+        {"type": "function", "function": {"name": "reset_password"}},
+        {"type": "function", "function": {"name": "log_ticket"}},
+        {"type": "function", "function": {"name": "record_decision"}},
+    ]
+    message = procedure_context_message(payload, tools)
+    assert message is not None
+    assert "constraints are not met" in message["content"]
+    assert "do not call unlock_account or reset_password" in message["content"]
+    assert "record_decision ESCALATE" in message["content"]
 
 
 def test_reorder_tool_calls_moves_record_decision_after_actions():
@@ -123,3 +182,11 @@ def test_maybe_strip_tool_content_can_be_disabled(monkeypatch):
     monkeypatch.setenv("CAUM_AGENTBEATS_STRIP_TOOL_CONTENT", "0")
     content = maybe_strip_tool_content("I did the thing.", [{"name": "record_decision"}])
     assert content == "I did the thing."
+
+
+def test_tool_argument_keys_extracts_shape_without_values():
+    assert tool_argument_keys('{"employee_id":"EMP_1","ticket_id":"TKT_1"}') == [
+        "employee_id",
+        "ticket_id",
+    ]
+    assert tool_argument_keys("not-json") == []
